@@ -1,0 +1,145 @@
+#!/bin/bash
+
+# install a clean server environment in INSTALL_ROOT
+# change INSTALL_ROOT to desired location
+# zero security as db passwords, etc are 'lacuna'
+
+
+# these steps need to be done by hand to get this script:
+# install root
+INSTALL_ROOT=~/lacuna
+GIT_USER=mharwood # or plainblack
+
+mkdir -p $INSTALL_ROOT
+
+cd $INSTALL_ROOT
+
+# get Lacuna source
+git clone https://github.com/$GIT_USER/Lacuna-Server-Open.git
+
+# from here on is automated:
+
+# setup local perl
+PERLBREW_ROOT=$INSTALL_ROOT/perlbrew
+curl -L http://install.perlbrew.pl | bash
+
+perlbrew/bin/perlbrew init
+
+echo >> ~/.bash_profile
+echo "export \$PERLBREW_ROOT=$PERLBREW_ROOT" >> ~/.bash_profile
+echo "source $INSTALL_ROOT/perlbrew/etc/bashrc" >> ~/.bash_profile
+
+echo "export PATH=$INSTALL_ROOT/bin:$INSTALL_ROOT/sbin:\$PATH" >> ~/.bash_profile
+echo "export LD_LIBRARY_PATH=$INSTALL_ROOT/lib:\$LD_LIBRARY_PATH" >> ~/.bash_profile
+echo "export ANY_MOOSE=Moose" >> ~/.bash_profile
+
+source ~/.bash_profile
+
+
+perlbrew/bin/perlbrew --notest install perl-5.12.1
+perlbrew/bin/perlbrew switch perl-5.12.1
+
+mkdir sources
+cd sources
+
+# redhat
+if [ sudo which yum ]
+then
+	sudo sh -c "which yum && yum -y install ncurses-devel gcc make glibc-devel gcc-c++ zlib-devel openssl-devel java sendmail expat expat-devel"
+
+	wget http://www.percona.com/redir/downloads/Percona-Server-5.1/Percona-Server-5.1.54-12.5/RPM/rhel5/x86_64/Percona-Server-shared-51-5.1.54-rel12.5.188.rhel5.x86_64.rpm
+	wget http://www.percona.com/redir/downloads/Percona-Server-5.1/Percona-Server-5.1.54-12.5/RPM/rhel5/x86_64/Percona-Server-server-51-5.1.54-rel12.5.188.rhel5.x86_64.rpm
+	wget http://www.percona.com/redir/downloads/Percona-Server-5.1/Percona-Server-5.1.54-12.5/RPM/rhel5/x86_64/Percona-Server-devel-51-5.1.54-rel12.5.188.rhel5.x86_64.rpm
+	wget http://www.percona.com/redir/downloads/Percona-Server-5.1/Percona-Server-5.1.54-12.5/RPM/rhel5/x86_64/Percona-Server-client-51-5.1.54-rel12.5.188.rhel5.x86_64.rpm
+	wget http://www.percona.com/redir/downloads/XtraBackup/XtraBackup-1.4/RPM/rhel5/x86_64/xtrabackup-1.4-74.rhel5.x86_64.rpm
+
+	service sendmail start
+	rpm -ivh *.rpm
+
+
+	wget ftp://anonymous@xmlsoft.org/libxml2/libxml2-sources-2.7.7.tar.gz
+	tar xfz libxml2-sources-2.7.7.tar.gz
+	(cd libxml2-2.7.7 && ./configure --prefix=$INSTALL_ROOT && make && make install)
+
+	wget ftp://ftp.csx.cam.ac.uk/pub/software/programming/pcre/pcre-8.10.tar.gz
+	tar xzf pcre-8.10.tar.gz
+	(cd pcre-8.10 && ./configure --prefix=$INSTALL_ROOT && make && make install)
+
+	wget http://openssl.org/source/openssl-1.0.0c.tar.gz
+	tar xzf openssl-1.0.0c.tar.gz
+	wget http://nginx.org/download/nginx-0.7.67.tar.gz
+	tar xzf nginx-0.7.67.tar.gz
+	(cd nginx-0.7.67 && ./configure --prefix=$INSTALL_ROOT --with-pcre=../pcre-8.10 --with-http_ssl_module --with-openssl=../openssl-1.0.0c && make && make install) 
+
+	wget http://www.monkey.org/~provos/libevent-1.4.14b-stable.tar.gz
+	tar xfz libevent-1.4.14b-stable.tar.gz
+	(cd libevent-1.4.14b-stable && ./configure --prefix=$INSTALL_ROOT && make && make install)
+
+	wget http://memcached.googlecode.com/files/memcached-1.4.15.tar.gz
+	tar xfz memcached-1.4.15.tar.gz
+	(cd memcached-1.4.15 && ./configure --prefix=$INSTALL_ROOT && make && make install)
+fi
+
+# Mageia
+if [ sudo which urpmi ]
+then
+	sudo urpmi mariadb lib64mariadb-devel openssl-devel expat-devel libxml2-devel memcached libevent-devel pcre
+
+	#wget http://www.percona.com/redir/downloads/Percona-Server-5.1/Percona-Server-5.1.51-11.5/source/Percona-Server.tar.gz
+	#tar zxf Percona-Server.tar.gz
+	#wget http://www.percona.com/redir/downloads/XtraBackup/XtraBackup-1.4/source/xtrabackup-1.4.tar.gz
+	#tar zxf xtrabackup-1.4.tar.gz
+
+fi
+
+# start memcached before doing the perl module installs or the tests for Memcached::libmemcached fail
+memcached -d
+
+# setup up local mysql
+mkdir -p $INSTALL_ROOT/db
+
+(cd $INSTALL_ROOT/db 							\
+&&	mysql_install_db  --datadir=`pwd`/data --user=`whoami` 		\
+&&	mysqladmin -u root password 'lacuna' 				\
+&&	mysqladmin -u root -h localhost.localdomain password 'lacuna' 	\
+&&	mysqld_safe --datadir=`pwd`/data --log-error=`pwd`/error.log --port=4044 --socket=`pwd`/mysql.sock --pid-file=`pwd`/mysql.pid \
+)
+
+
+mysql -u root -p lacuna <<EOF
+ create database lacuna;
+ grant all privileges on lacuna.* to lacuna@localhost identified by 'lacuna';
+ flush privileges;
+ exit;
+EOF
+
+
+cd $INSTALL_ROOT
+cp Lacuna-Server-Open/etc/lacuna.conf.template Lacuna-Server-Open/etc/lacuna.conf
+sed -ie 's/"username" : "XXXX"/"username" : "lacuna"/' Lacuna-Server-Open/etc/lacuna.conf
+sed -ie 's/"password" : "XXXX"/"password" : "lacuna"/' Lacuna-Server-Open/etc/lacuna.conf
+sed -ie 's/"dsn" : "DBI:mysql:XXXX"/"dsn" : "DBI:mysql:lacuna"/' Lacuna-Server-Open/etc/lacuna.conf
+
+
+
+
+cpan App::cpanminus
+
+$INSTALL_ROOT/Lacuna-Server-Open/bin/setup/install-pm.sh 
+
+# need moose
+cpanm Moose
+# Email::Valid dependencies that aren't auto installed:
+# cpanm Capture::Tiny 
+# original list
+cpanm AnyEvent Email::Valid Chat::Envolve Text::CSV_XS Log::Log4perl UUID::Tiny DateTime::Format::MySQL \
+	DBIx::Class::TimeStamp JSON::XS JSON Config::JSON Starman JSON::RPC::Dispatcher Log::Any::Adapter \
+	Log::Any::Adapter::Log4perl String::Random List::Util::WeightedChoice List::Util List::MoreUtils \
+       	DateTime Regexp::Common Pod::Simple::HTML File::Copy DateTime::Format::Duration XML::FeedPP \
+	SOAP::Amazon::S3 DBD::mysql DBIx::Class JSON::Any DBIx::Class::InflateColumn::Serializer \
+	DBIx::Class::DynamicSubclass Memcached::libmemcached Server::Starter IO::Socket::SSL \
+	Net::Server::SS::PreFork Email::Stuff Facebook::Graph File::Path namespace::autoclean \
+	Clone Plack::Middleware::CrossOrigin Net::Amazon::S3 Path::Class Git::Wrapper Guard Digest::MD5 \
+	Digest::HMAC_SHA1 XML::Hash::LX Tie::IxHash LWP::UserAgent XML::Parser SOAP::Lite \
+	Business::PayPal::API URI::Encode XML::Hash::LX
+
